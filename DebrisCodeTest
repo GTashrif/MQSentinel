@@ -1,0 +1,128 @@
+const byte S0 = 10, S1 = 11, S2 = 12, Z = A0;
+const byte IN1 = 3, IN2 = 6, SLP = 7;
+const byte N = 8;
+
+// front pair: set these after the live test
+byte FL = 7, FR = 0;
+
+char mode = 0;
+int pwm = 0;
+
+int readCh(byte ch)
+{
+    digitalWrite(S0, (ch & 1) ? HIGH : LOW);
+    digitalWrite(S1, (ch & 2) ? HIGH : LOW);
+    digitalWrite(S2, (ch & 4) ? HIGH : LOW);
+    delayMicroseconds(20);
+    analogRead(Z);                        // throwaway read
+    long sum = 0;
+    for (byte i = 0; i < 4; i++) sum += analogRead(Z);
+    return sum / 4;
+}
+
+void stopMotor()
+{
+    analogWrite(IN1, 0);
+    digitalWrite(IN2, LOW);
+}
+
+// i: idle noise per channel (beacon OFF, motor stopped)
+void idleTest()
+{
+    int lo[N], hi[N];
+    long sum[N];
+    for (byte i = 0; i < N; i++) { lo[i] = 1023; hi[i] = 0; sum[i] = 0; }
+
+    for (int k = 0; k < 200; k++)
+        for (byte i = 0; i < N; i++)
+        {
+            int v = readCh(i);
+            if (v < lo[i]) lo[i] = v;
+            if (v > hi[i]) hi[i] = v;
+            sum[i] += v;
+        }
+
+    int worst = 0;
+    Serial.println(F("ch min avg max"));
+    for (byte i = 0; i < N; i++)
+    {
+        Serial.print(i);          Serial.print(' ');
+        Serial.print(lo[i]);      Serial.print(' ');
+        Serial.print(sum[i] / 200); Serial.print(' ');
+        Serial.println(hi[i]);
+        if (hi[i] > worst) worst = hi[i];
+    }
+    Serial.print(F("highest idle reading: "));
+    Serial.println(worst);
+}
+
+// s: live view of all channels, strongest channel, and front pair error
+void liveView()
+{
+    static unsigned long t = 0;
+    if (millis() - t < 200) return;
+    t = millis();
+
+    int v[N];
+    int best = 0, bestCh = -1;
+    for (byte i = 0; i < N; i++)
+    {
+        v[i] = readCh(i);
+        Serial.print(v[i]);
+        Serial.print(' ');
+        if (v[i] > best) { best = v[i]; bestCh = i; }
+    }
+
+    int l = v[FL], r = v[FR];
+    Serial.print(F(" best "));
+    Serial.print(bestCh);
+    Serial.print(F(" err "));
+    Serial.println(l + r > 0 ? (int)(100L * (l - r) / (l + r)) : 0);
+}
+
+// f / b: ramp PWM up slowly, press any key the moment the satellite starts to turn
+void ramp()
+{
+    static unsigned long t = 0;
+    if (millis() - t < 400) return;
+    t = millis();
+
+    if (pwm < 255) pwm += 5;
+    digitalWrite(IN2, mode == 'f' ? HIGH : LOW);
+    analogWrite(IN1, pwm);
+    Serial.println(pwm);
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    pinMode(S0, OUTPUT); pinMode(S1, OUTPUT); pinMode(S2, OUTPUT);
+    pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT); pinMode(SLP, OUTPUT);
+    digitalWrite(SLP, HIGH);
+    stopMotor();
+    Serial.println(F("i idle | s live | f/b ramp fwd/back | x stop"));
+}
+
+void loop()
+{
+    if (Serial.available())
+    {
+        char c = Serial.read();
+        if (c == '\n' || c == '\r') return;
+
+        if (mode == 'f' || mode == 'b')
+        {
+            Serial.print(F("Stopped at PWM "));
+            Serial.println(pwm);
+        }
+
+        stopMotor();
+        pwm = 0;
+        mode = c;
+
+        if (c == 'i') { idleTest(); mode = 0; }
+    }
+
+    if (mode == 's') liveView();
+    if (mode == 'f' || mode == 'b') ramp();
+}
